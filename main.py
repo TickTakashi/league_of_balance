@@ -9,7 +9,7 @@ import random
 from os import path
 
 HEADERS = {
-	'X-Riot-Token': 'RGAPI-55e0b534-73e8-4b23-92de-5a77d9ffe8a8',
+	'X-Riot-Token': 'RGAPI-2c0fcfb5-f637-43ac-a84b-b4d45da61600',
 }
 
 MAX_ATTEMPTS = 5
@@ -33,7 +33,7 @@ aggregate_folder = "aggregate"
 size_file = "standard_play_league_page_sizes.txt"
 page_sizes = {}
 
-max_matchlist_shard_size = 5
+max_matchlist_shard_size = 1000
 
 
 RANDOM_SEED = 19930904
@@ -301,132 +301,142 @@ def parse_accountIDs(ranked_tiers, sample_percentage=0.10):
 
 
 # Download matchlists from the given time period for all account IDs.
-def download_matchlists(ranked_tiers):
-	accountIDs_filename = os.path.join(folder_name, aggregate_folder, "_".join(ranked_tiers) + accountIDs_suffix)
-	f = open(accountIDs_filename, "r")
-	account_file_str = f.read()
-	accountIDs = account_file_str.strip().split("\n")
-	f.close()
-
-	matchlists = {}
-
+def download_matchlists(ranked_tiers, from_matchlist=False, sample_percentage=0.1):
 	matchlist_folder = os.path.join(folder_name, aggregate_folder, "_".join(ranked_tiers) + "_matches")
-	if not os.path.exists(matchlist_folder):
-		os.mkdir(matchlist_folder)
-		stamped_print("Creating Folder %s for shards" % matchlist_folder)
-	else:
-		stamped_print("Folder %s exists. Please manually backup existing folder and delete it before continuing" % matchlist_folder)
-		exit()
+	master_matchlist_filename = os.path.join(matchlist_folder, "MASTER_MATCHLIST")
+	complete_matchlist = []
 
-	shard_matches = []
-	shard_index = 0
-
-	aid_index = 1
-	for aid in accountIDs:
-		stamped_print("(%s/%s) Getting Matches for %s" % (aid_index, len(accountIDs), aid))
-		# get the matchlist from the before time interval
-		matchlist_before_data = riot_get(matchlist_uri.format(region=reg, encryptedAccountId=aid, beginTime=(PATCH_TIME - COLLECTION_TIME), endTime=PATCH_TIME))
-		if matchlist_before_data:
-			stamped_print("\tSTEP 1 SUCCESS - Retrieved Pre-patch matches")
-		else:
-			stamped_print("\tSTEP 1 FAILED - Unable to Retrieve matches in this timeframe (Pre Patch)")
-			
-		# get the matchlist from the after time interval
-		matchlist_after_data = riot_get(matchlist_uri.format(region=reg, encryptedAccountId=aid, beginTime=(PATCH_TIME - COLLECTION_TIME), endTime=PATCH_TIME))
-		if matchlist_after_data:
-			stamped_print("\tSTEP 2 SUCCESS - Retrieved Post-patch matches")
-		else:
-			stamped_print("\tSTEP 2 FAILED - Unable to Retrieve matches in this timeframe (Post Patch)")
-
-		# combine matchlists
-		combined_matchlist = []
-
-		try:
-			combined_matchlist = json.loads(matchlist_before_data)["matches"] + json.loads(matchlist_after_data)["matches"]
-			stamped_print("\tSTEP 3 - Parsed and combined matchlists")
-		except:
-			stamped_print("\tSTEP 3 FAILED - Error Parsing Matchlist for %s." % aid)
-
-		matchlists[aid] = combined_matchlist
-
-		stamped_print("\tSTEP 4 - Begin fetching %s matches for %s" % (len(combined_matchlist), aid))
-
-		match_count = 0
-		# get each match from the combined matchlist
-		for match in combined_matchlist:
-			match_count += 1
-			matchdata = riot_get(matchdata_uri.format(region=reg, gameId=match["gameId"]))
-			
-			if matchdata:
-				# add each match to the shard
-				shard_matches.append(matchdata)
-				stamped_print("\t\t SUCCESS (%s/%s)" % (match_count, len(combined_matchlist)))
-
-
-				# if shard is oversize then save to disk and start new shard
-				if len(shard_matches) > max_matchlist_shard_size:
-					next_shard_filename = os.path.join(matchlist_folder, "MATCHES_" + str(shard_index).zfill(6))
-					try:
-						current_shard = open(next_shard_filename, "w")
-						for smd in shard_matches:
-							match_dict = json.loads(smd)
-
-							small_match_dict = {}
-							small_match_dict["gameVersion"] = match_dict["gameVersion"]
-							small_match_dict["gameId"] = match_dict["gameId"]
-							small_match_dict["gameCreation"] = match_dict["gameCreation"]
-							small_match_dict["gameDuration"] = match_dict["gameDuration"]
-							small_match_dict["teams"] = []
-
-							for tm in match_dict["teams"]:
-								small_team_dict = {}
-								small_team_dict["win"] = tm["win"]
-								small_team_dict["teamId"] = tm["teamId"]
-								small_team_dict["bans"] = []
-								for bn in tm["bans"]:
-									small_team_dict["bans"].append(bn["championId"])
-
-								small_match_dict["teams"].append(small_team_dict)
-
-							small_match_dict["participants"] = []
-							for ps in match_dict["participants"]:
-								small_part_dict = {}
-								small_part_dict["participantId"] = ps["participantId"]
-								small_part_dict["championId"] = ps["championId"]
-								small_part_dict["teamId"] = ps["teamId"]
-								small_match_dict["participants"].append(small_part_dict)
-
-							small_json = json.dumps(small_match_dict)
-							current_shard.write(small_json + "\n")
-							
-						stamped_print("MATCH SHARD FILE %s WRITTEN" % next_shard_filename)
-						current_shard.close()
-					except:
-						stamped_print("Could not save Shard File. This is Really bad.")
-
-					shard_index += 1
-					shard_matches = []
-			else:
-				stamped_print("\t\t SKIPPED (%s/%s)" % (match_count, len(combined_matchlist)))
-
-		aid_index += 1
-
-	if len(shard_matches) > 0:
-		next_shard_filename = os.path.join(matchlist_folder, "MATCHES_" + str(shard_index).zfill(6))
-		current_shard = open(next_shard_filename, "w")
-		current_shard.write(json.dumps(shard_matches))
-		stamped_print("FINAL MATCH SHARD FILE %s WRITTEN" % next_shard_filename)
-		current_shard.close()
-
-	try:
-		master_matchlist_filename = os.path.join(matchlist_folder, "MASTER_MATCHLIST")
-		f = open(master_matchlist_filename)
-		f.write(json.dumps(matchlists))
+	if not from_matchlist:
+		accountIDs_filename = os.path.join(folder_name, aggregate_folder, "_".join(ranked_tiers) + accountIDs_suffix)
+		f = open(accountIDs_filename, "r")
+		account_file_str = f.read()
+		accountIDs = account_file_str.strip().split("\n")
 		f.close()
 
-		stamped_print("Master matchlist saved as %s" % master_matchlist_filename)
-	except:
-		stamped_print("Failed to save master matchlist")
+		matchlists = {}
+
+		matchlist_folder = os.path.join(folder_name, aggregate_folder, "_".join(ranked_tiers) + "_matches")
+		if not os.path.exists(matchlist_folder):
+			os.mkdir(matchlist_folder)
+			stamped_print("Creating Folder %s for shards" % matchlist_folder)
+		else:
+			stamped_print("Folder %s exists. Please manually backup existing folder and delete it before continuing" % matchlist_folder)
+			exit()
+
+		aid_index = 1
+		
+		random.seed(RANDOM_SEED)
+		num_to_sample = int(sample_percentage * len(accountIDs))
+		sample = random.sample(accountIDs, num_to_sample)
+
+		for aid in sample:
+			stamped_print("(%s/%s) Getting Matches for %s" % (aid_index, len(sample), aid))
+			# get the matchlist from the before time interval
+			matchlist_before_data = riot_get(matchlist_uri.format(region=reg, encryptedAccountId=aid, beginTime=(PATCH_TIME - COLLECTION_TIME), endTime=PATCH_TIME))
+			if matchlist_before_data:
+				stamped_print("\tSTEP 1 SUCCESS - Retrieved Pre-patch matches")
+			else:
+				stamped_print("\tSTEP 1 FAILED - Unable to Retrieve matches in this timeframe (Pre Patch)")
+				
+			# get the matchlist from the after time interval
+			matchlist_after_data = riot_get(matchlist_uri.format(region=reg, encryptedAccountId=aid, beginTime=(PATCH_TIME), endTime=(PATCH_TIME + COLLECTION_TIME)))
+			if matchlist_after_data:
+				stamped_print("\tSTEP 2 SUCCESS - Retrieved Post-patch matches")
+			else:
+				stamped_print("\tSTEP 2 FAILED - Unable to Retrieve matches in this timeframe (Post Patch)")
+
+			# combine matchlists
+			combined_matchlist = []
+
+			try:
+				combined_matchlist = json.loads(matchlist_before_data)["matches"] + json.loads(matchlist_after_data)["matches"]
+				stamped_print("\tSTEP 3 - Parsed and combined matchlists (%s matches)" % len(combined_matchlist))
+			except:
+				stamped_print("\tSTEP 3 FAILED - Error Parsing Matchlist for %s" % aid)
+
+			matchlists[aid] = combined_matchlist
+
+			aid_index += 1
+
+		for k in matchlists:
+			for m in matchlists[k]:
+				complete_matchlist.append(m)
+
+		try:
+			f = open(master_matchlist_filename, "w")
+			f.write(json.dumps(complete_matchlist))
+			f.close()
+			stamped_print("Master matchlist saved as %s" % master_matchlist_filename)
+		except Exception as e:
+			stamped_print("Failed to save master matchlist %s" % e)
+	else:
+		f = open(master_matchlist_filename)
+		complete_matchlist = json.loads(f.read())
+		stamped_print("Loaded matchlist master file.")
+
+	stamped_print("Got a list of %s Matches. Begin fetching match data" % len(complete_matchlist))
+
+	random.shuffle(complete_matchlist)
+
+	match_count = 0
+	shard_index = 0
+	shard_match_count = max_matchlist_shard_size
+	current_shard = None
+
+	# get each match from the combined matchlist
+	for match in complete_matchlist:
+		if shard_match_count >= max_matchlist_shard_size:
+			next_shard_filename = os.path.join(matchlist_folder, "MATCHES_" + str(shard_index).zfill(6))
+
+			if current_shard:
+				stamped_print("Matches Shard Complete. Creating New Shard %s" % next_shard_filename)
+				current_shard.close()
+
+			current_shard = open(next_shard_filename, "w")
+			shard_match_count = 0
+			shard_index += 1
+
+		match_count += 1
+		matchdata = riot_get(matchdata_uri.format(region=reg, gameId=match["gameId"]))
+		
+		if matchdata:
+			match_dict = json.loads(matchdata)
+			small_match_dict = {}
+			small_match_dict["gameVersion"] = match_dict["gameVersion"]
+			small_match_dict["gameId"] = match_dict["gameId"]
+			small_match_dict["gameCreation"] = match_dict["gameCreation"]
+			small_match_dict["gameDuration"] = match_dict["gameDuration"]
+			small_match_dict["teams"] = []
+
+			for tm in match_dict["teams"]:
+				small_team_dict = {}
+				small_team_dict["win"] = tm["win"]
+				small_team_dict["teamId"] = tm["teamId"]
+				small_team_dict["bans"] = []
+				for bn in tm["bans"]:
+					small_team_dict["bans"].append(bn["championId"])
+
+				small_match_dict["teams"].append(small_team_dict)
+
+			small_match_dict["participants"] = []
+			for ps in match_dict["participants"]:
+				small_part_dict = {}
+				small_part_dict["participantId"] = ps["participantId"]
+				small_part_dict["championId"] = ps["championId"]
+				small_part_dict["teamId"] = ps["teamId"]
+				small_match_dict["participants"].append(small_part_dict)
+
+			small_json = json.dumps(small_match_dict)
+			current_shard.write(small_json + "\n")
+			shard_match_count += 1
+			stamped_print("\t\t SUCCESS (%s/%s)" % (match_count, len(complete_matchlist)))
+		else:
+			stamped_print("\t\t SKIPPED (%s/%s)" % (match_count, len(complete_matchlist)))
+
+	if current_shard:
+		current_shard.close()
+
+
 
 
 
@@ -452,7 +462,7 @@ else:
 
 
 #parse_accountIDs(["DIAMOND", "PLATINUM"])
-download_matchlists(["DIAMOND", "PLATINUM"])
+download_matchlists(["DIAMOND", "PLATINUM"], from_matchlist=True)
 
 '''
 
